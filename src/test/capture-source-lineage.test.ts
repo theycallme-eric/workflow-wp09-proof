@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { assertCaptureSourceLineage, type ExpectedCaptureGroup, type CaptureInputProvenance } from './capture-source-lineage'
 
-type FixtureOptions = { wrongParent?: boolean; direct?: boolean; attempt?: number }
+type FixtureOptions = { wrongParent?: boolean; direct?: boolean; attempt?: number; bound?: boolean }
 type MutableProvenance = CaptureInputProvenance & Record<string, unknown>
 
 // Disposable synthetic Git repos only: these bytes are NOT screenshots or product evidence.
@@ -43,8 +43,9 @@ function fixture(options: FixtureOptions = {}) {
     capturedSourceCommits: [captured],
   }
   const provenance: MutableProvenance = { version: 1, kind: 'capture-input-provenance', ...expected, capturedSourceCommits: [...expected.capturedSourceCommits], retainedBranch, payloadSha256 }
-  write(`${group}/lineage-provenance.json`, `${JSON.stringify(provenance)}\n`)
+  if (!options.bound) write(`${group}/lineage-provenance.json`, `${JSON.stringify(provenance)}\n`)
   const input = commit('evidence and provenance')
+  if (options.bound) { expected.attempt = attempt + 1; expected.retainedInput = { branch: retainedBranch, commit: input, payloadSha256 } }
   if (!options.direct) {
     git('checkout', '-q', 'main')
     git('merge', '--squash', retainedBranch)
@@ -202,3 +203,39 @@ withFixture('a nonzero Git command fails without exposing its diagnostic text', 
   try { process.env.PATH = `${bin}:${original}`; assert.throws(() => f.prove(), (e: unknown) => e instanceof Error && /status 17/.test(e.message) && !e.message.includes('PRIVATE_DIAGNOSTIC')) }
   finally { process.env.PATH = original }
 })
+
+withFixture('explicit retained input proves a continued attempt on its original branch without sidecar', (f) => {
+  assert.equal(f.expected.attempt, 2)
+  assert.equal(f.prove().inputCommit, f.input)
+  assert.equal(f.prove().incorporationCommit, f.incorporated)
+  assert.equal(f.prove().deliveryProven, false)
+}, { bound: true })
+for (const [name, change, message] of [
+  ['commit', { commit: '0'.repeat(40) }, /bound input commit mismatch/],
+  ['payload', { payloadSha256: '0'.repeat(64) }, /bound payload digest mismatch/],
+  ['branch', { branch: 'agent-runner/task-036-a3-4b51f5c5' }, /wrong bound retained run branch/],
+  ['run', { branch: 'agent-runner/task-036-a1-00000000' }, /wrong bound retained run branch/],
+  ['unknown field', { waiver: true }, /invalid bound retained input/],
+] as const) withFixture(`bound ${name} drift refuses`, (f) => {
+  assert.throws(() => f.prove({ retainedInput: { ...f.expected.retainedInput!, ...change } }), message)
+}, { bound: true })
+withFixture('bound missing input refuses', (f) => {
+  f.git('branch', '-D', branch)
+  assert.throws(() => f.prove(), /missing or invalid exact retained ref/)
+}, { bound: true })
+withFixture('bound changed payload refuses', (f) => {
+  f.write(`${group}/screenshots/fixture.png`, 'changed bytes')
+  assert.throws(() => f.prove(), /bound payload digest mismatch/)
+}, { bound: true })
+withFixture('bound changed full tree refuses', (f) => {
+  f.git('checkout', '-q', branch); f.write('unrelated.txt', 'changed tree'); const input = f.commit('changed input tree')
+  f.git('checkout', '-q', 'main')
+  assert.throws(() => f.prove({ retainedInput: { ...f.expected.retainedInput!, commit: input } }), /missing or ambiguous exact structural incorporation/)
+}, { bound: true })
+withFixture('bound ambiguous witnesses refuse', (f) => {
+  const tree = f.git('rev-parse', `${f.input}^{tree}`)
+  const second = f.git('commit-tree', tree, '-p', f.base, '-m', 'second incorporation')
+  const merge = f.git('commit-tree', tree, '-p', f.incorporated, '-p', second, '-m', 'ambiguous merge')
+  f.git('update-ref', 'refs/heads/main', merge)
+  assert.throws(() => f.prove(), /missing or ambiguous exact structural incorporation/)
+}, { bound: true })

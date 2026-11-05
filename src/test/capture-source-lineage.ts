@@ -26,6 +26,11 @@ export interface ExpectedCaptureGroup {
   groupPath: string
   /** Taken from the already validated real capture records, never inferred. */
   capturedSourceCommits: readonly string[]
+  /** Exact native retained input, independently reconciled from the original receipt.
+   * For already-delivered input without a sidecar. This is NOT native acceptance.
+   * Continuations retain their original branch even when the attempt increases.
+   */
+  retainedInput?: { branch: string; commit: string; payloadSha256: string }
 }
 
 export interface CaptureInputProvenance {
@@ -124,21 +129,34 @@ export function assertCaptureSourceLineage(rootPath: string, expected: ExpectedC
 
   const currentPayload = payload(root, expected.groupPath)
   const relativeProvenance = `${expected.groupPath}/${PROVENANCE}`
-  const provenancePath = resolve(root, relativeProvenance)
-  const stat = lstatSync(provenancePath)
-  requireProof(stat.isFile() && !stat.isSymbolicLink() && stat.size <= 16_384, 'missing or unsafe provenance')
-  const raw = readFileSync(provenancePath)
-  const p = JSON.parse(raw.toString('utf8')) as CaptureInputProvenance
-  requireProof(p !== null && typeof p === 'object' && !Array.isArray(p), 'invalid provenance object')
-  const keys = ['version', 'kind', 'repository', 'taskId', 'taskRevision', 'runId', 'attempt', 'groupPath', 'retainedBranch', 'testedBase', 'capturedSourceCommits', 'payloadSha256']
-  requireProof(JSON.stringify(Object.keys(p).sort()) === JSON.stringify(keys.sort()), 'unknown or missing provenance fields')
-  const branch = `agent-runner/${expected.taskId.toLowerCase()}-a${expected.attempt}-${expected.runId.slice(0, 8)}`
-  requireProof(p.version === 1 && p.kind === 'capture-input-provenance' && p.retainedBranch === branch, 'wrong provenance kind/retained run branch')
-  for (const key of ['repository', 'taskId', 'taskRevision', 'runId', 'attempt', 'groupPath', 'testedBase'] as const) {
-    requireProof(p[key] === expected[key], `provenance ${key} mismatch`)
+  const bound = expected.retainedInput
+  let branch: string
+  let raw: Buffer | undefined
+  if (bound !== undefined) {
+    requireProof(bound !== null && typeof bound === 'object' && !Array.isArray(bound)
+      && Object.keys(bound).sort().join(',') === 'branch,commit,payloadSha256', 'invalid bound retained input')
+    const match = new RegExp(`^agent-runner/${expected.taskId.toLowerCase()}-a([1-9][0-9]*)-${expected.runId.slice(0, 8)}$`).exec(bound.branch)
+    requireProof(match && Number.isSafeInteger(Number(match[1])) && Number(match[1]) <= expected.attempt, 'wrong bound retained run branch')
+    requireProof(SHA.test(bound.commit) && DIGEST.test(bound.payloadSha256), 'invalid bound input identity')
+    requireProof(bound.payloadSha256 === currentPayload.sha256, 'bound payload digest mismatch')
+    branch = bound.branch
+  } else {
+    const provenancePath = resolve(root, relativeProvenance)
+    const stat = lstatSync(provenancePath)
+    requireProof(stat.isFile() && !stat.isSymbolicLink() && stat.size <= 16_384, 'missing or unsafe provenance')
+    raw = readFileSync(provenancePath)
+    const p = JSON.parse(raw.toString('utf8')) as CaptureInputProvenance
+    requireProof(p !== null && typeof p === 'object' && !Array.isArray(p), 'invalid provenance object')
+    const keys = ['version', 'kind', 'repository', 'taskId', 'taskRevision', 'runId', 'attempt', 'groupPath', 'retainedBranch', 'testedBase', 'capturedSourceCommits', 'payloadSha256']
+    requireProof(JSON.stringify(Object.keys(p).sort()) === JSON.stringify(keys.sort()), 'unknown or missing provenance fields')
+    branch = `agent-runner/${expected.taskId.toLowerCase()}-a${expected.attempt}-${expected.runId.slice(0, 8)}`
+    requireProof(p.version === 1 && p.kind === 'capture-input-provenance' && p.retainedBranch === branch, 'wrong provenance kind/retained run branch')
+    for (const key of ['repository', 'taskId', 'taskRevision', 'runId', 'attempt', 'groupPath', 'testedBase'] as const) {
+      requireProof(p[key] === expected[key], `provenance ${key} mismatch`)
+    }
+    requireProof(Array.isArray(p.capturedSourceCommits) && JSON.stringify(p.capturedSourceCommits) === JSON.stringify(captures), 'captured source set mismatch')
+    requireProof(typeof p.payloadSha256 === 'string' && DIGEST.test(p.payloadSha256) && p.payloadSha256 === currentPayload.sha256, 'payload digest mismatch')
   }
-  requireProof(Array.isArray(p.capturedSourceCommits) && JSON.stringify(p.capturedSourceCommits) === JSON.stringify(captures), 'captured source set mismatch')
-  requireProof(typeof p.payloadSha256 === 'string' && DIGEST.test(p.payloadSha256) && p.payloadSha256 === currentPayload.sha256, 'payload digest mismatch')
 
   const refs = [`refs/heads/${branch}`, `refs/remotes/origin/${branch}`]
   const retainedInput = () => {
@@ -149,17 +167,28 @@ export function assertCaptureSourceLineage(rootPath: string, expected: ExpectedC
     return rows[0][2]
   }
   const input = retainedInput()
+  requireProof(!bound || input === bound.commit, 'bound input commit mismatch')
   for (const sha of [...captures, expected.testedBase]) {
     requireProof(git(['merge-base', '--is-ancestor', sha, input], true) !== false, 'captured source/base is not input ancestry')
   }
-  requireProof((git(['show', `${input}:${relativeProvenance}`]) as Buffer).equals(raw), 'input provenance bytes differ')
+  if (raw) requireProof((git(['show', `${input}:${relativeProvenance}`]) as Buffer).equals(raw), 'input provenance bytes differ')
   const entries = (git(['ls-tree', '-rz', input, '--', expected.groupPath]) as Buffer).toString('utf8').split('\0').filter(Boolean)
   const inputPaths = entries.map((row) => {
     const [metadata, path] = row.split('\t')
     requireProof(/^(100644|100755) blob [a-f0-9]{40}$/.test(metadata), 'input group contains a nonregular blob')
     return path
   }).sort()
-  const expectedPaths = [...currentPayload.files.keys(), relativeProvenance].sort()
+  // The bound path also supports the original tree with no sidecar at all.
+  // Any sidecar present must still be byte-identical to the retained input.
+  const provenancePath = resolve(root, relativeProvenance)
+  const hasProvenance = readdirSync(resolve(root, expected.groupPath)).includes(PROVENANCE)
+  if (!raw && hasProvenance) {
+    const stat = lstatSync(provenancePath)
+    requireProof(stat.isFile() && !stat.isSymbolicLink() && stat.size <= 16_384, 'unsafe bound provenance')
+    raw = readFileSync(provenancePath)
+    requireProof((git(['show', `${input}:${relativeProvenance}`]) as Buffer).equals(raw), 'input provenance bytes differ')
+  }
+  const expectedPaths = [...currentPayload.files.keys(), ...(hasProvenance ? [relativeProvenance] : [])].sort()
   requireProof(JSON.stringify(inputPaths) === JSON.stringify(expectedPaths), 'input group inventory differs')
   for (const [path, bytes] of currentPayload.files) {
     requireProof((git(['show', `${input}:${path}`]) as Buffer).equals(bytes), 'input payload bytes differ')
@@ -174,6 +203,6 @@ export function assertCaptureSourceLineage(rootPath: string, expected: ExpectedC
   const matches = history.map((row) => row.split(' ')).filter(([, candidateTree, ...parents]) => candidateTree === tree && parents.length === 1 && parents[0] === expected.testedBase)
   requireProof(matches.length === 1 && SHA.test(matches[0][0]), 'missing or ambiguous exact structural incorporation')
   requireProof(text(['rev-parse', '--verify', 'HEAD^{commit}']) === head && retainedInput() === input, 'HEAD/retained input changed during inspection')
-  requireProof(readFileSync(provenancePath).equals(raw) && payload(root, expected.groupPath).sha256 === currentPayload.sha256, 'current group changed during inspection')
+  requireProof((!raw || readFileSync(provenancePath).equals(raw)) && payload(root, expected.groupPath).sha256 === currentPayload.sha256, 'current group changed during inspection')
   return { mode: 'structural-incorporation', capturedSourceCommits: captures, inputCommit: input, incorporationCommit: matches[0][0], treeSha: tree, deliveryProven: false }
 }

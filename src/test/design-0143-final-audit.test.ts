@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest'
 import { createHash } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { hashTree } from '../../e2e/design-0143/capture'
@@ -307,7 +306,7 @@ describe('follow-up TASK-034 — introduced route has real AFTER evidence, not a
       .toEqual(new Set(records.flatMap((record) => record.captures.map((capture) => capture.screenshot.name))))
     // Keep the authentic completed Task006 receipt bound to its original
     // evidence, rather than relabelling the owner's direct correction as a
-    // new native run. The current plain-branch capture uses real Git ancestry.
+    // new native run. Current captures require strict source incorporation too.
     const nativeRecords = readdirSync(resolve(root, FORMAT_EFFECTS_TASK006_EVIDENCE_DIR, 'records'))
       .filter((name) => name.endsWith('.json'))
       .map((name) => json<FormatEvidenceRecord>(`${FORMAT_EFFECTS_TASK006_EVIDENCE_DIR}/records/${name}`))
@@ -322,14 +321,24 @@ describe('follow-up TASK-034 — introduced route has real AFTER evidence, not a
       groupPath: FORMAT_EFFECTS_TASK006_EVIDENCE_DIR,
       capturedSourceCommits: nativeRecords.map((record) => record.identity.applicationCommit!),
     })
-    for (const commit of new Set(records.map((record) => record.identity.applicationCommit!))) {
-      expect(commit).toMatch(/^[a-f0-9]{40}$/)
-      // Preserve this source commit when delivering the direct correction.
-      // This proves source continuity, not owner visual or merge approval.
-      expect(() => execFileSync('git', ['merge-base', '--is-ancestor', commit, 'HEAD'], {
-        cwd: root, stdio: ['ignore', 'pipe', 'pipe'],
-      })).not.toThrow()
-    }
+    // Operator-collected capture; actual native recovery accepted this exact
+    // retained input at attempt 2 on the original a1 branch. The immutable
+    // delivered tree has no provenance sidecar: do not rewrite its history.
+    // Receipt/task identity is independently reconciled in the external repair
+    // evidence. This helper proves incorporation, never native ACK or delivery.
+    assertCaptureSourceLineage(root, {
+      repository: 'theycallme-eric/clear', taskId: 'TASK-001',
+      taskRevision: '674e8ae991d252db638bd7a933cf17b192dd44f5d771b630b5884615d797d97c:TASK-001',
+      runId: '627ef3aa-5d3f-4c2e-b389-057ec883f283', attempt: 2,
+      testedBase: 'b96d2f405cc049cbf19b47c56b7973d42ad4c977',
+      groupPath: FORMAT_EVIDENCE_DIR,
+      capturedSourceCommits: records.map((record) => record.identity.applicationCommit!),
+      retainedInput: {
+        branch: 'agent-runner/task-001-a1-627ef3aa',
+        commit: 'c34bde6ce330aedd4d2ca67ea07209216d6c2c19',
+        payloadSha256: 'e89eebeb04de2e72018ee274fbcd571ba22a91d3069bb4fe3c1ba5fc69cd7637',
+      },
+    })
     for (const record of records) {
       expect(record.captures.every((capture) => capture.route === FORMAT_ROUTE && capture.before === null)).toBe(true)
       for (const identity of [record.identity.applicationCommit, record.identity.runtimeSourceHash, record.driverSourceHash]) {
