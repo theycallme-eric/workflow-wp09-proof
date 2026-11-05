@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { assertCaptureSourceLineage, type ExpectedCaptureGroup, type CaptureInputProvenance } from './capture-source-lineage'
 
-type FixtureOptions = { wrongParent?: boolean; direct?: boolean; attempt?: number; bound?: boolean }
+type FixtureOptions = { wrongParent?: boolean; direct?: boolean; attempt?: number; bound?: boolean; continued?: boolean; repository?: string }
 type MutableProvenance = CaptureInputProvenance & Record<string, unknown>
 
 // Disposable synthetic Git repos only: these bytes are NOT screenshots or product evidence.
@@ -38,8 +38,8 @@ function fixture(options: FixtureOptions = {}) {
   for (const [path, bytes] of payload) write(path, bytes)
   const payloadSha256 = digest(JSON.stringify(payload.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([path, bytes]) => ({ path, sha256: digest(bytes) }))))
   const expected: ExpectedCaptureGroup = {
-    repository: 'theycallme-eric/clear', taskId: 'TASK-036', taskRevision: `${'a'.repeat(64)}:TASK-036`,
-    runId: run, attempt, testedBase: options.wrongParent ? captured : base, groupPath: group,
+    repository: options.repository ?? 'theycallme-eric/clear', taskId: 'TASK-036', taskRevision: `${'a'.repeat(64)}:TASK-036`,
+    runId: run, attempt: options.continued ? attempt + 1 : attempt, ...(options.continued ? { retainedBranch } : {}), testedBase: options.wrongParent ? captured : base, groupPath: group,
     capturedSourceCommits: [captured],
   }
   const provenance: MutableProvenance = { version: 1, kind: 'capture-input-provenance', ...expected, capturedSourceCommits: [...expected.capturedSourceCommits], retainedBranch, payloadSha256 }
@@ -239,3 +239,16 @@ withFixture('bound ambiguous witnesses refuse', (f) => {
   f.git('update-ref', 'refs/heads/main', merge)
   assert.throws(() => f.prove(), /missing or ambiguous exact structural incorporation/)
 }, { bound: true })
+
+withFixture('sidecar proof retains a continued attempt on its exact original branch', (f) => {
+  assert.equal(f.expected.attempt, 2)
+  assert.equal(f.prove().inputCommit, f.input)
+  assert.throws(() => f.prove({retainedBranch:'agent-runner/task-036-a3-4b51f5c5'}), /wrong retained run branch/)
+  assert.throws(() => f.prove({retainedBranch:'agent-runner/task-036-a1-00000000'}), /wrong retained run branch/)
+}, {continued:true})
+
+withFixture('disposable execution repository is truthful and still bound exactly to provenance', (f) => {
+  assert.equal(f.prove().mode, 'structural-incorporation')
+  assert.equal(f.prove().deliveryProven, false)
+  assert.throws(() => f.prove({repository:'theycallme-eric/clear'}), /repository mismatch/)
+}, {repository:'theycallme-eric/workflow-wp09-proof'})

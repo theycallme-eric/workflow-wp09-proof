@@ -17,7 +17,7 @@ function requireProof(ok: unknown, reason: string): asserts ok {
 }
 
 export interface ExpectedCaptureGroup {
-  repository: 'theycallme-eric/clear'
+  repository: string
   taskId: string
   taskRevision: string
   runId: string
@@ -30,6 +30,7 @@ export interface ExpectedCaptureGroup {
    * For already-delivered input without a sidecar. This is NOT native acceptance.
    * Continuations retain their original branch even when the attempt increases.
    */
+  retainedBranch?: string
   retainedInput?: { branch: string; commit: string; payloadSha256: string }
 }
 
@@ -97,7 +98,7 @@ export function capturePayloadSha256(root: string, groupPath: string): string {
 /** Call only after the unchanged capture-record/runtime/driver/PNG validator. No writes or network. */
 export function assertCaptureSourceLineage(rootPath: string, expected: ExpectedCaptureGroup): CaptureLineage {
   const root = realpathSync(rootPath)
-  requireProof(expected.repository === 'theycallme-eric/clear' && /^TASK-\d{3}$/.test(expected.taskId), 'wrong repository/task')
+  requireProof(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(expected.repository) && /^TASK-\d{3}$/.test(expected.taskId), 'wrong repository/task')
   requireProof(UUID.test(expected.runId) && Number.isSafeInteger(expected.attempt) && expected.attempt >= 1, 'wrong run/attempt')
   requireProof(new RegExp(`^[a-f0-9]{64}:${expected.taskId}$`).test(expected.taskRevision) && SHA.test(expected.testedBase), 'wrong revision/base')
   requireProof(/^docs\/design\/evidence-0143\/[a-z0-9]+(?:-[a-z0-9]+)*$/.test(expected.groupPath), 'unsafe evidence group')
@@ -149,7 +150,9 @@ export function assertCaptureSourceLineage(rootPath: string, expected: ExpectedC
     requireProof(p !== null && typeof p === 'object' && !Array.isArray(p), 'invalid provenance object')
     const keys = ['version', 'kind', 'repository', 'taskId', 'taskRevision', 'runId', 'attempt', 'groupPath', 'retainedBranch', 'testedBase', 'capturedSourceCommits', 'payloadSha256']
     requireProof(JSON.stringify(Object.keys(p).sort()) === JSON.stringify(keys.sort()), 'unknown or missing provenance fields')
-    branch = `agent-runner/${expected.taskId.toLowerCase()}-a${expected.attempt}-${expected.runId.slice(0, 8)}`
+    branch = expected.retainedBranch ?? `agent-runner/${expected.taskId.toLowerCase()}-a${expected.attempt}-${expected.runId.slice(0, 8)}`
+    const branchAttempt = new RegExp(`^agent-runner/${expected.taskId.toLowerCase()}-a([1-9][0-9]*)-${expected.runId.slice(0, 8)}$`).exec(branch)
+    requireProof(branchAttempt && Number.isSafeInteger(Number(branchAttempt[1])) && Number(branchAttempt[1]) <= expected.attempt, 'wrong retained run branch')
     requireProof(p.version === 1 && p.kind === 'capture-input-provenance' && p.retainedBranch === branch, 'wrong provenance kind/retained run branch')
     for (const key of ['repository', 'taskId', 'taskRevision', 'runId', 'attempt', 'groupPath', 'testedBase'] as const) {
       requireProof(p[key] === expected[key], `provenance ${key} mismatch`)

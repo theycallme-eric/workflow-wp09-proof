@@ -6,7 +6,7 @@ import { hashTree } from '../../e2e/design-0143/capture'
 import { REQUIRED_SCREENS } from '../../e2e/required-routes'
 import {
   currentFormatRuntimeHash, formatBaselineAbsence, formatDriverHash, formatPreviewManifest,
-  FORMAT_EVIDENCE_DIR, FORMAT_EFFECTS_TASK006_EVIDENCE_DIR, FORMAT_HISTORICAL_COMMIT, FORMAT_HISTORICAL_EVIDENCE_DIR, FORMAT_ROUTE, validateFormatPreviewEvidence, type FormatEvidenceRecord,
+  FORMAT_EFFECTS_TASK006_EVIDENCE_DIR, FORMAT_HISTORICAL_COMMIT, FORMAT_HISTORICAL_EVIDENCE_DIR, FORMAT_ROUTE, validateFormatPreviewEvidence, type FormatEvidenceRecord,
 } from '../../e2e/design-0143/format-preview-evidence'
 import {
   browserTestsForTarget,
@@ -14,7 +14,7 @@ import {
   REQ_007_REST_DAY_CASE,
   REQ_011_REVIEW_CASE,
 } from '../../playwright.config'
-import { assertCaptureSourceLineage, capturePayloadSha256 } from './capture-source-lineage'
+import { assertCaptureSourceLineage, capturePayloadSha256, type ExpectedCaptureGroup } from './capture-source-lineage'
 
 describe('TASK-027 browser selection follows the tested package and target', () => {
   const publicOtp = 'mobile design-0143/task-040-entry-settings.spec.ts entry: Welcome and OTP validation, busy, typed failure and cooldown'
@@ -130,6 +130,16 @@ type EvidenceRecord = { task: string; status: string; identity: Identity; captur
 
 const text = (path: string) => readFileSync(resolve(root, path), 'utf-8')
 const json = <T,>(path: string) => JSON.parse(text(path)) as T
+// Document-only current-group selection. Updating this pointer after collection
+// does not change the executed capture driver or invalidate its exact hash.
+const CURRENT_FORMAT_CAPTURE = json<Omit<ExpectedCaptureGroup, 'capturedSourceCommits'>>('docs/design/evidence-0143/CURRENT-CAPTURE.json')
+const captureKeys = Object.keys(CURRENT_FORMAT_CAPTURE).sort().join(',')
+const commonKeys = ['repository', 'taskId', 'taskRevision', 'runId', 'attempt', 'testedBase', 'groupPath']
+if (!['retainedInput', 'retainedBranch'].some((key) => [...commonKeys, key].sort().join(',') === captureKeys)
+  || !/^docs\/design\/evidence-0143\/[a-z0-9]+(?:-[a-z0-9]+)*$/.test(CURRENT_FORMAT_CAPTURE.groupPath)) {
+  throw new Error('Invalid current capture source metadata')
+}
+const FORMAT_EVIDENCE_DIR = CURRENT_FORMAT_CAPTURE.groupPath
 const sha256 = (path: string) => createHash('sha256').update(readFileSync(resolve(root, path))).digest('hex')
 const dir = (consumer: string) => `docs/design/evidence-0143/${consumer}`
 
@@ -321,23 +331,12 @@ describe('follow-up TASK-034 — introduced route has real AFTER evidence, not a
       groupPath: FORMAT_EFFECTS_TASK006_EVIDENCE_DIR,
       capturedSourceCommits: nativeRecords.map((record) => record.identity.applicationCommit!),
     })
-    // Operator-collected capture; actual native recovery accepted this exact
-    // retained input at attempt 2 on the original a1 branch. The immutable
-    // delivered tree has no provenance sidecar: do not rewrite its history.
-    // Receipt/task identity is independently reconciled in the external repair
-    // evidence. This helper proves incorporation, never native ACK or delivery.
+    // Source provenance only. The external native receipt, not this document,
+    // supplies task acceptance; every current runtime/driver/pixel/session check
+    // above remains required before structural source incorporation is inspected.
     assertCaptureSourceLineage(root, {
-      repository: 'theycallme-eric/clear', taskId: 'TASK-001',
-      taskRevision: '674e8ae991d252db638bd7a933cf17b192dd44f5d771b630b5884615d797d97c:TASK-001',
-      runId: '627ef3aa-5d3f-4c2e-b389-057ec883f283', attempt: 2,
-      testedBase: 'b96d2f405cc049cbf19b47c56b7973d42ad4c977',
-      groupPath: FORMAT_EVIDENCE_DIR,
+      ...CURRENT_FORMAT_CAPTURE,
       capturedSourceCommits: records.map((record) => record.identity.applicationCommit!),
-      retainedInput: {
-        branch: 'agent-runner/task-001-a1-627ef3aa',
-        commit: 'c34bde6ce330aedd4d2ca67ea07209216d6c2c19',
-        payloadSha256: 'e89eebeb04de2e72018ee274fbcd571ba22a91d3069bb4fe3c1ba5fc69cd7637',
-      },
     })
     for (const record of records) {
       expect(record.captures.every((capture) => capture.route === FORMAT_ROUTE && capture.before === null)).toBe(true)

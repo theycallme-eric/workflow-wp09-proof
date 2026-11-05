@@ -1,0 +1,14 @@
+{
+  "repository": "theycallme-eric/clear",
+  "taskId": "TASK-001",
+  "taskRevision": "674e8ae991d252db638bd7a933cf17b192dd44f5d771b630b5884615d797d97c:TASK-001",
+  "runId": "627ef3aa-5d3f-4c2e-b389-057ec883f283",
+  "attempt": 2,
+  "testedBase": "b96d2f405cc049cbf19b47c56b7973d42ad4c977",
+  "groupPath": "docs/design/evidence-0143/task034-format-preview-refinement-task001-20261105",
+  "retainedInput": {
+    "branch": "agent-runner/task-001-a1-627ef3aa",
+    "commit": "c34bde6ce330aedd4d2ca67ea07209216d6c2c19",
+    "payloadSha256": "e89eebeb04de2e72018ee274fbcd571ba22a91d3069bb4fe3c1ba5fc69cd7637"
+  }
+}
